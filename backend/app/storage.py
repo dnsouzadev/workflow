@@ -348,6 +348,13 @@ class RunStorage:
             "updated_at": row["updated_at"],
         }
 
+    def delete_workflow(self, workflow_id):
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM workflow_versions WHERE workflow_id = ?", (workflow_id,))
+            conn.execute("DELETE FROM schedules WHERE workflow_id = ?", (workflow_id,))
+            conn.execute("DELETE FROM workflows WHERE workflow_id = ?", (workflow_id,))
+            conn.commit()
+
     def set_secret(self, name, value):
         timestamp = utc_now()
         with self._lock, self._connect() as conn:

@@ -39,6 +39,20 @@ export default function App() {
   const [nodeLogs, setNodeLogs] = useState<Record<string, string>>({});
 
   const selectedNode = useMemo(() => nodes.find((node) => node.id === selectedNodeId) ?? null, [nodes, selectedNodeId]);
+  const [editorMode, setEditorMode] = useState<"form" | "json">("form");
+
+  const parsedConfig = useMemo(() => {
+    try {
+      return JSON.parse(configValue) || {};
+    } catch (e) {
+      return {};
+    }
+  }, [configValue]);
+
+  const updateConfigField = (field: string, value: any) => {
+    const updated = { ...parsedConfig, [field]: value };
+    setConfigValue(JSON.stringify(updated, null, 2));
+  };
 
   useEffect(() => {
     if (selectedNode) setConfigValue(JSON.stringify(selectedNode.data ?? {}, null, 2));
@@ -68,8 +82,28 @@ export default function App() {
     config: { max_workers: 1, default_timeout_ms: 5000, default_retries: 0, retry_backoff_ms: 200 }
   });
 
+  const hasPath = (start: string, target: string, currentEdges: WorkflowEdge[]): boolean => {
+    const visited = new Set<string>();
+    const queue = [start];
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      if (node === target) return true;
+      if (!visited.has(node)) {
+        visited.add(node);
+        const children = currentEdges.filter(e => e.from === node).map(e => e.to);
+        queue.push(...children);
+      }
+    }
+    return false;
+  };
+
   const handleCreateEdge = (from: string, to: string) => {
     if (from === to || edges.some((edge) => edge.from === from && edge.to === to)) return;
+    if (hasPath(to, from, edges)) {
+      setEditorError("Conexão inválida: loops/ciclos não são permitidos em um workflow (DAG).");
+      return;
+    }
+    setEditorError(null);
     setEdges((prev) => [...prev, { from, to }]);
   };
 
@@ -123,9 +157,40 @@ export default function App() {
     } catch (err) { console.error(err); }
   };
 
+  const handleDeleteWorkflow = async () => {
+    if (!selectedWorkflowId) return;
+    if (!window.confirm("Deseja realmente excluir este workflow e todos os seus agendamentos?")) return;
+    try {
+      const res = await fetch(`${apiBase}/workflows/${selectedWorkflowId}`, { method: "DELETE" });
+      if (res.ok) {
+        setWorkflowMessage("Workflow excluído com sucesso.");
+        setSelectedWorkflowId(null);
+        setWorkflowName("Meu workflow");
+        setWorkflowDescription("");
+        setNodes(workflow.nodes);
+        setEdges(workflow.edges);
+        fetchWorkflows();
+      } else {
+        setEditorError("Falha ao excluir o workflow.");
+      }
+    } catch (err) {
+      console.error(err);
+      setEditorError("Erro de conexão ao excluir o workflow.");
+    }
+  };
+
   const runWorkflow = () => {
-    if (socketRef.current) socketRef.current.close();
-    setLoading(true); setResult(null); setNodeStatus(buildStatusMap("idle", nodes)); setNodeLogs({}); setRunStatus("queued");
+    if (socketRef.current) {
+      socketRef.current.onclose = null;
+      socketRef.current.onerror = null;
+      socketRef.current.close();
+    }
+    setLoading(true);
+    setResult(null);
+    setNodeStatus(buildStatusMap("idle", nodes));
+    setNodeLogs({});
+    setRunStatus("queued");
+    setEditorError(null);
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
     ws.onopen = () => ws.send(JSON.stringify({ type: "start", workflow: buildWorkflowPayload() }));
@@ -140,6 +205,21 @@ export default function App() {
         case "run_finished": setResult(payload); setRunId(payload.run_id); setRunStatus(payload.status === "success" ? "success" : "failed"); setLoading(false); break;
         default: break;
       }
+    };
+    ws.onerror = (err) => {
+      console.error("WebSocket error:", err);
+      setEditorError("Falha na conexão com o servidor de execução.");
+      setRunStatus("failed");
+      setLoading(false);
+    };
+    ws.onclose = () => {
+      setLoading((prev) => {
+        if (prev) {
+          setRunStatus("failed");
+          setEditorError("Conexão com o servidor encerrada antes do término do workflow.");
+        }
+        return false;
+      });
     };
   };
 
@@ -188,6 +268,7 @@ export default function App() {
               <div style={{ display: "flex", gap: "10px" }}>
                 <button className="button primary" onClick={() => handleSaveWorkflow("create")}>Salvar novo</button>
                 <button className="button active" onClick={() => handleSaveWorkflow("update")} disabled={!selectedWorkflowId}>Atualizar selecionado</button>
+                <button className="button secondary" onClick={handleDeleteWorkflow} disabled={!selectedWorkflowId} style={{ color: "#ef4444", borderColor: "#7f1d1d" }}>Excluir selecionado</button>
               </div>
               <div style={{ display: "flex", gap: "10px" }}>
                 <select value={selectedWorkflowId ?? ""} onChange={e => { const id = e.target.value; if(id) handleLoadWorkflow(id); }}>
@@ -214,16 +295,258 @@ export default function App() {
                 <Graph nodes={nodes} edges={edges} nodeStatus={nodeStatus} connectMode={connectMode} selectedNodeId={selectedNodeId} onSelectNode={setSelectedNodeId} onNodePositionChange={handleNodePositionChange} onCreateEdge={handleCreateEdge} onDropNode={handleDropNode} />
               </div>
             </main>
-            <aside className="panel">
-              <div className="panel-title">Node details</div>
+            <aside className="panel" style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
+              <div className="panel-title" style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span>Node details</span>
+                {selectedNode && (
+                  <div style={{ display: "flex", gap: "4px" }}>
+                    <button 
+                      className={`button small ${editorMode === "form" ? "primary" : "secondary"}`}
+                      onClick={() => setEditorMode("form")}
+                      style={{ padding: "4px 8px", fontSize: "10px" }}
+                    >
+                      Form
+                    </button>
+                    <button 
+                      className={`button small ${editorMode === "json" ? "primary" : "secondary"}`}
+                      onClick={() => setEditorMode("json")}
+                      style={{ padding: "4px 8px", fontSize: "10px" }}
+                    >
+                      JSON
+                    </button>
+                  </div>
+                )}
+              </div>
               {selectedNode ? (
                 <div className="details">
                   <div className="detail-row"><span>ID</span><span className="mono">{selectedNode.id}</span></div>
                   <div className="detail-row"><span>Tipo</span><span>{selectedNode.type}</span></div>
-                  {nodeLogs[selectedNode.id] && <><div className="panel-divider" /><pre className="code-block logs-block">{nodeLogs[selectedNode.id]}</pre></>}
-                  <div className="panel-divider" /><textarea className="config-editor" value={configValue} onChange={e => setConfigValue(e.target.value)} rows={8} />
-                  <button className="button secondary small" onClick={handleSaveConfig} style={{ marginTop: "8px", width: "100%" }}>Salvar Configuração</button>
-                  {selectedNodeId && result?.all_outputs?.[selectedNodeId] && <><div className="panel-divider" /><pre className="code-block">{JSON.stringify(result.all_outputs[selectedNodeId], null, 2)}</pre></>}
+                  
+                  {nodeLogs[selectedNode.id] && (
+                    <>
+                      <div className="panel-divider" />
+                      <pre className="code-block logs-block" style={{ maxHeight: "100px" }}>{nodeLogs[selectedNode.id]}</pre>
+                    </>
+                  )}
+                  
+                  <div className="panel-divider" />
+                  
+                  {editorMode === "json" ? (
+                    <textarea 
+                      className="config-editor" 
+                      value={configValue} 
+                      onChange={e => setConfigValue(e.target.value)} 
+                      rows={8} 
+                    />
+                  ) : (
+                    <div className="form-fields">
+                      {selectedNode.type === "input" && (
+                        <div className="field">
+                          <label>Valor / Payload (JSON/Texto)</label>
+                          <textarea 
+                            className="config-editor" 
+                            value={typeof parsedConfig.value === 'object' ? JSON.stringify(parsedConfig.value, null, 2) : parsedConfig.value ?? ""} 
+                            onChange={e => {
+                              let val = e.target.value;
+                              try { val = JSON.parse(val); } catch(err) {}
+                              updateConfigField("value", val);
+                            }}
+                            rows={4}
+                          />
+                        </div>
+                      )}
+                      
+                      {selectedNode.type === "filter" && (
+                        <>
+                          <div className="field" style={{ marginBottom: "8px" }}>
+                            <label>Limiar (Threshold)</label>
+                            <input 
+                              type="number"
+                              className="config-editor"
+                              style={{ width: "100%" }}
+                              value={parsedConfig.threshold ?? 2} 
+                              onChange={e => updateConfigField("threshold", Number(e.target.value))}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>Chave do Objeto (Opcional)</label>
+                            <input 
+                              type="text"
+                              className="config-editor"
+                              style={{ width: "100%" }}
+                              placeholder="Ex: items"
+                              value={parsedConfig.key ?? ""} 
+                              onChange={e => updateConfigField("key", e.target.value || undefined)}
+                            />
+                          </div>
+                        </>
+                      )}
+                      
+                      {selectedNode.type === "http_request" && (
+                        <>
+                          <div className="field" style={{ marginBottom: "8px" }}>
+                            <label>URL</label>
+                            <input 
+                              type="text"
+                              className="config-editor"
+                              style={{ width: "100%" }}
+                              placeholder="https://api.github.com/..."
+                              value={parsedConfig.url ?? ""} 
+                              onChange={e => updateConfigField("url", e.target.value)}
+                            />
+                          </div>
+                          <div className="field" style={{ marginBottom: "8px" }}>
+                            <label>Método</label>
+                            <select 
+                              className="config-editor"
+                              style={{ width: "100%", height: "38px" }}
+                              value={parsedConfig.method ?? "GET"} 
+                              onChange={e => updateConfigField("method", e.target.value)}
+                            >
+                              <option value="GET">GET</option>
+                              <option value="POST">POST</option>
+                              <option value="PUT">PUT</option>
+                              <option value="DELETE">DELETE</option>
+                            </select>
+                          </div>
+                          <div className="field">
+                            <label>Headers (JSON)</label>
+                            <textarea 
+                              className="config-editor" 
+                              placeholder='{"Authorization": "Bearer xxx"}'
+                              value={parsedConfig.headers ? JSON.stringify(parsedConfig.headers, null, 2) : ""} 
+                              onChange={e => {
+                                try { updateConfigField("headers", JSON.parse(e.target.value)); } catch(err) {}
+                              }}
+                              rows={3}
+                            />
+                          </div>
+                        </>
+                      )}
+                      
+                      {selectedNode.type === "json_transform" && (
+                        <div className="field">
+                          <label>Template (JSON/Texto)</label>
+                          <textarea 
+                            className="config-editor" 
+                            placeholder='{"resultado": "{full_name} tem {stargazers_count} estrelas"}'
+                            value={typeof parsedConfig.template === 'object' ? JSON.stringify(parsedConfig.template, null, 2) : parsedConfig.template ?? ""} 
+                            onChange={e => {
+                              let val = e.target.value;
+                              try { val = JSON.parse(val); } catch(err) {}
+                              updateConfigField("template", val);
+                            }}
+                            rows={6}
+                          />
+                        </div>
+                      )}
+                      
+                      {selectedNode.type === "script" && (
+                        <div className="field">
+                          <label>Script Python (`data` / `result` / `log` / `json` )</label>
+                          <textarea 
+                            className="config-editor" 
+                            style={{ height: "180px" }}
+                            value={parsedConfig.code ?? "result = data"} 
+                            onChange={e => updateConfigField("code", e.target.value)}
+                            rows={10}
+                          />
+                        </div>
+                      )}
+                      
+                      {selectedNode.type === "condition" && (
+                        <div className="field">
+                          <label>Expressão Condicional Python</label>
+                          <input 
+                            type="text"
+                            className="config-editor"
+                            style={{ width: "100%" }}
+                            placeholder="data.get('stars', 0) > 100"
+                            value={parsedConfig.expression ?? ""} 
+                            onChange={e => updateConfigField("expression", e.target.value)}
+                          />
+                        </div>
+                      )}
+                      
+                      {selectedNode.type === "delay" && (
+                        <div className="field">
+                          <label>Atraso (Segundos)</label>
+                          <input 
+                            type="number"
+                            className="config-editor"
+                            style={{ width: "100%" }}
+                            value={parsedConfig.seconds ?? 1} 
+                            onChange={e => updateConfigField("seconds", Number(e.target.value))}
+                          />
+                        </div>
+                      )}
+                      
+                      {selectedNode.type === "slack_webhook" && (
+                        <>
+                          <div className="field" style={{ marginBottom: "8px" }}>
+                            <label>Webhook URL (ou secret:NOME)</label>
+                            <input 
+                              type="text"
+                              className="config-editor"
+                              style={{ width: "100%" }}
+                              placeholder="secret:SLACK_WEBHOOK"
+                              value={parsedConfig.webhook_url ?? ""} 
+                              onChange={e => updateConfigField("webhook_url", e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>Mensagem</label>
+                            <textarea 
+                              className="config-editor" 
+                              value={parsedConfig.text ?? "Workflow notification: {data}"} 
+                              onChange={e => updateConfigField("text", e.target.value)}
+                              rows={4}
+                            />
+                          </div>
+                        </>
+                      )}
+                      
+                      {selectedNode.type === "discord_webhook" && (
+                        <>
+                          <div className="field" style={{ marginBottom: "8px" }}>
+                            <label>Webhook URL (ou secret:NOME)</label>
+                            <input 
+                              type="text"
+                              className="config-editor"
+                              style={{ width: "100%" }}
+                              placeholder="secret:DISCORD_WEBHOOK"
+                              value={parsedConfig.webhook_url ?? ""} 
+                              onChange={e => updateConfigField("webhook_url", e.target.value)}
+                            />
+                          </div>
+                          <div className="field">
+                            <label>Mensagem</label>
+                            <textarea 
+                              className="config-editor" 
+                              value={parsedConfig.content ?? "Workflow notification: {data}"} 
+                              onChange={e => updateConfigField("content", e.target.value)}
+                              rows={4}
+                            />
+                          </div>
+                        </>
+                      )}
+                      
+                      {selectedNode.type === "output" && (
+                        <div className="muted" style={{ padding: "10px 0" }}>
+                          Nó de saída. Sem parâmetros extras.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  <button className="button secondary small" onClick={handleSaveConfig} style={{ marginTop: "12px", width: "100%" }}>Salvar Configuração</button>
+                  {selectedNodeId && result?.all_outputs?.[selectedNodeId] && (
+                    <>
+                      <div className="panel-divider" />
+                      <div className="panel-title" style={{ fontSize: "11px" }}>Último Resultado</div>
+                      <pre className="code-block" style={{ maxHeight: "150px" }}>{JSON.stringify(result.all_outputs[selectedNodeId], null, 2)}</pre>
+                    </>
+                  )}
                 </div>
               ) : <div className="muted">Selecione um node.</div>}
             </aside>
@@ -280,6 +603,20 @@ function SchedulesManager({ apiBase, workflows }: { apiBase: string, workflows: 
     setName(""); fetchSchedules();
   };
 
+  const handleToggle = async (scheduleId: string, currentStatus: boolean | number) => {
+    const nextStatus = !currentStatus;
+    try {
+      await fetch(`${apiBase}/schedules/${scheduleId}/toggle`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: nextStatus })
+      });
+      fetchSchedules();
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   return (
     <div className="schedules">
       <div className="panel" style={{ marginBottom: "20px" }}>
@@ -298,11 +635,23 @@ function SchedulesManager({ apiBase, workflows }: { apiBase: string, workflows: 
       </div>
       <div className="panel">
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
-          <thead><tr style={{ textAlign: "left" }}><th>Nome</th><th>Cron</th><th>Last Run</th><th>Ações</th></tr></thead>
+          <thead><tr style={{ textAlign: "left" }}><th>Nome</th><th>Cron</th><th>Status</th><th>Last Run</th><th>Ações</th></tr></thead>
           <tbody>
             {schedules.map(s => (
               <tr key={s.schedule_id} style={{ borderBottom: "1px solid #1e293b" }}>
-                <td style={{ padding: "10px 0" }}>{s.name}</td><td><code>{s.cron}</code></td><td>{s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "-"}</td>
+                <td style={{ padding: "10px 0" }}>{s.name}</td>
+                <td><code>{s.cron}</code></td>
+                <td>
+                  <label className="toggle-switch" style={{ display: "inline-block" }}>
+                    <input 
+                      type="checkbox" 
+                      checked={!!s.enabled} 
+                      onChange={() => handleToggle(s.schedule_id, s.enabled)} 
+                    />
+                    <span className="toggle-slider"></span>
+                  </label>
+                </td>
+                <td>{s.last_run_at ? new Date(s.last_run_at).toLocaleString() : "-"}</td>
                 <td><button className="button secondary small" onClick={async () => { await fetch(`${apiBase}/schedules/${s.schedule_id}`, { method: "DELETE" }); fetchSchedules(); }}>Remover</button></td>
               </tr>
             ))}

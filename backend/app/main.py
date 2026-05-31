@@ -207,6 +207,15 @@ def update_workflow(workflow_id: str, payload: WorkflowUpdateRequest):
     return {"workflow_id": workflow_id}
 
 
+@app.delete("/workflows/{workflow_id}")
+def delete_workflow(workflow_id: str):
+    workflow_item = storage.get_workflow(workflow_id)
+    if not workflow_item:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+    storage.delete_workflow(workflow_id)
+    return {"status": "ok"}
+
+
 @app.get("/workflows/{workflow_id}/versions")
 def get_workflow_versions(workflow_id: str):
     with storage._lock, storage._connect() as conn:
@@ -256,6 +265,14 @@ def create_schedule(payload: ScheduleRequest):
 @app.delete("/schedules/{schedule_id}")
 def delete_schedule(schedule_id: str):
     storage.delete_schedule(schedule_id)
+    return {"status": "ok"}
+
+class ToggleScheduleRequest(BaseModel):
+    enabled: bool
+
+@app.post("/schedules/{schedule_id}/toggle")
+def toggle_schedule(schedule_id: str, payload: ToggleScheduleRequest):
+    storage.update_schedule(schedule_id, enabled=payload.enabled)
     return {"status": "ok"}
 
 @app.get("/stats/daily")

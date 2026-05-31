@@ -210,4 +210,4 @@ def run_node(node_def, data, context=None):
             context.log(f"No handler for node type: {node_type}")
         return data
         
-    return handler(node_def, data)
+    return handler(node_def, data, context)
