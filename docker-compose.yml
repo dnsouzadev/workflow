@@ -1,0 +1,57 @@
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: workflow
+      LOG_LEVEL: INFO
+      JOB_TIMEOUT_SECONDS: 600
+      JOB_RESULT_TTL_SECONDS: 3600
+      JOB_FAILURE_TTL_SECONDS: 3600
+      RUNS_DB_PATH: /data/runs.db
+    ports:
+      - "8000:8000"
+    volumes:
+      - runs-data:/data
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ./backend
+    command: python app/worker.py
+    environment:
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: workflow
+      LOG_LEVEL: INFO
+      JOB_TIMEOUT_SECONDS: 600
+      JOB_RESULT_TTL_SECONDS: 3600
+      JOB_FAILURE_TTL_SECONDS: 3600
+      RUNS_DB_PATH: /data/runs.db
+    volumes:
+      - runs-data:/data
+    depends_on:
+      - redis
+
+  frontend:
+    build:
+      context: ./frontend
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      REACT_APP_API_HOST: localhost
+      REACT_APP_API_PORT: 8000
+      WATCHPACK_POLLING: "true"
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  runs-data:
