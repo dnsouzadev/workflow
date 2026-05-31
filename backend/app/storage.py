@@ -28,6 +28,7 @@ class RunStorage:
                 """
                 CREATE TABLE IF NOT EXISTS runs (
                     run_id TEXT PRIMARY KEY,
+                    job_id TEXT,
                     status TEXT NOT NULL,
                     started_at TEXT NOT NULL,
                     finished_at TEXT,
@@ -35,6 +36,10 @@ class RunStorage:
                 )
                 """
             )
+            try:
+                conn.execute("ALTER TABLE runs ADD COLUMN job_id TEXT")
+            except sqlite3.OperationalError:
+                pass
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS node_runs (
@@ -105,13 +110,13 @@ class RunStorage:
             )
             conn.commit()
 
-    def create_run(self):
+    def create_run(self, job_id=None):
         run_id = str(uuid.uuid4())
         started_at = utc_now()
         with self._lock, self._connect() as conn:
             conn.execute(
-                "INSERT INTO runs (run_id, status, started_at) VALUES (?, ?, ?)",
-                (run_id, "running", started_at),
+                "INSERT INTO runs (run_id, job_id, status, started_at) VALUES (?, ?, ?, ?)",
+                (run_id, job_id, "running", started_at),
             )
             conn.commit()
         return run_id

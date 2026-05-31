@@ -37,7 +37,7 @@ class WorkflowEngine:
         self.default_retries = default_retries
         self.retry_backoff_ms = retry_backoff_ms
 
-    def execute_workflow(self, workflow, event_handler=None):
+    def execute_workflow(self, workflow, event_handler=None, job_id=None):
         nodes = workflow.get("nodes", [])
         edges = workflow.get("edges", [])
         config = workflow.get("config", {})
@@ -59,7 +59,7 @@ class WorkflowEngine:
         default_retries = config.get("default_retries", self.default_retries)
         retry_backoff_ms = config.get("retry_backoff_ms", self.retry_backoff_ms)
 
-        run_id = self.storage.create_run()
+        run_id = self.storage.create_run(job_id=job_id)
         outputs = {}
         node_status = {node_id: "pending" for node_id in node_ids}
         run_error = None

@@ -53,7 +53,7 @@ def execute_workflow_job(workflow):
             )
 
     try:
-        result = engine.execute_workflow(workflow, handle_event)
+        result = engine.execute_workflow(workflow, handle_event, job_id=job_id)
     except Exception as err:
         error_event = {
             "type": "run_failed",

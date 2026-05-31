@@ -33,6 +33,8 @@ export default function App() {
   const [configValue, setConfigValue] = useState("");
   const [view, setView] = useState<"editor" | "dashboard" | "secrets" | "schedules" | "run-inspector">("editor");
   const [inspectingRunId, setInspectingRunId] = useState<string | null>(null);
+  const [showInputModal, setShowInputModal] = useState(false);
+  const [customInput, setCustomInput] = useState("[1, 2, 3, 4, 5]");
 
   const buildStatusMap = (status: NodeStatus, list = nodes) => Object.fromEntries(list.map((node) => [node.id, status])) as Record<string, NodeStatus>;
   const [nodeStatus, setNodeStatus] = useState<Record<string, NodeStatus>>(() => buildStatusMap("idle", workflow.nodes));
@@ -179,7 +181,7 @@ export default function App() {
     }
   };
 
-  const runWorkflow = () => {
+  const runWorkflow = (customPayload?: any) => {
     if (socketRef.current) {
       socketRef.current.onclose = null;
       socketRef.current.onerror = null;
@@ -191,13 +193,15 @@ export default function App() {
     setNodeLogs({});
     setRunStatus("queued");
     setEditorError(null);
+    setRunId(null);
     const ws = new WebSocket(wsUrl);
     socketRef.current = ws;
-    ws.onopen = () => ws.send(JSON.stringify({ type: "start", workflow: buildWorkflowPayload() }));
+    ws.onopen = () => ws.send(JSON.stringify({ type: "start", workflow: customPayload || buildWorkflowPayload() }));
     ws.onmessage = (event) => {
       const payload = JSON.parse(event.data);
       switch (payload.type) {
         case "run_queued": setJobId(payload.job_id); break;
+        case "run_started": if (payload.run_id) setRunId(payload.run_id); break;
         case "node_started": setNodeStatus((prev) => ({ ...prev, [payload.node_id]: "running" })); setRunStatus("running"); break;
         case "node_succeeded": setNodeStatus((prev) => ({ ...prev, [payload.node_id]: "success" })); if (payload.logs) setNodeLogs((prev) => ({ ...prev, [payload.node_id]: payload.logs })); break;
         case "node_failed": setNodeStatus((prev) => ({ ...prev, [payload.node_id]: "error" })); if (payload.logs) setNodeLogs((prev) => ({ ...prev, [payload.node_id]: payload.logs })); break;
@@ -221,6 +225,23 @@ export default function App() {
         return false;
       });
     };
+  };
+
+  const cancelWorkflow = async () => {
+    if (!runId) return;
+    try {
+      const res = await fetch(`${apiBase}/runs/${runId}/cancel`, { method: "POST" });
+      if (res.ok) {
+        setWorkflowMessage("Execução cancelada pelo usuário.");
+        setRunStatus("failed");
+        setLoading(false);
+      } else {
+        setEditorError("Falha ao cancelar execução.");
+      }
+    } catch (err) {
+      console.error(err);
+      setEditorError("Erro de conexão ao cancelar execução.");
+    }
   };
 
   return (
@@ -250,7 +271,13 @@ export default function App() {
         <>
           <section className="toolbar panel">
             <div className="toolbar-left">
-              <button className="button primary" onClick={runWorkflow} disabled={loading}>{loading ? "Executando..." : "Executar Workflow"}</button>
+              <button className="button primary" onClick={() => runWorkflow()} disabled={loading}>{loading ? "Executando..." : "Executar Workflow"}</button>
+              {!loading && (
+                <button className="button secondary" onClick={() => setShowInputModal(true)}>Executar com Entrada...</button>
+              )}
+              {loading && runId && (
+                <button className="button secondary" onClick={cancelWorkflow} style={{ color: "#ef4444", borderColor: "#7f1d1d" }}>Cancelar Execução</button>
+              )}
               <button className={`button ${connectMode ? "active" : "secondary"}`} onClick={() => setConnectMode(prev => !prev)}>{connectMode ? "Conectar ON" : "Conectar OFF"}</button>
             </div>
             <div className="toolbar-right">
@@ -552,6 +579,50 @@ export default function App() {
             </aside>
           </div>
         </>
+      )}
+
+      {showInputModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div className="panel-title" style={{ fontSize: "18px", marginBottom: "4px" }}>Executar com Entrada Customizada</div>
+            <div className="muted" style={{ marginBottom: "10px" }}>Insira o valor ou objeto JSON que será injetado no nó do tipo `input` no início da execução.</div>
+            <textarea
+              className="config-editor"
+              value={customInput}
+              onChange={e => setCustomInput(e.target.value)}
+              rows={8}
+              style={{ height: "150px" }}
+              placeholder='Ex: {"repositorio": "gemini-cli"}'
+            />
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: "10px", marginTop: "10px" }}>
+              <button className="button secondary" onClick={() => setShowInputModal(false)}>Cancelar</button>
+              <button 
+                className="button primary" 
+                onClick={() => {
+                  let parsed = customInput;
+                  try {
+                    parsed = JSON.parse(customInput);
+                  } catch(e) {}
+                  
+                  const clonedPayload = buildWorkflowPayload();
+                  const inputNode = clonedPayload.nodes.find(n => n.type === "input");
+                  if (inputNode) {
+                    inputNode.data = { ...inputNode.data, value: parsed };
+                  } else {
+                    if (clonedPayload.nodes.length > 0) {
+                      clonedPayload.nodes[0].data = { ...clonedPayload.nodes[0].data, value: parsed };
+                    }
+                  }
+                  
+                  setShowInputModal(false);
+                  runWorkflow(clonedPayload);
+                }}
+              >
+                Executar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

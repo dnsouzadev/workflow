@@ -395,6 +395,32 @@ def get_run(run_id: str):
     return run
 
 
+@app.post("/runs/{run_id}/cancel")
+def cancel_run(run_id: str):
+    with storage._lock, storage._connect() as conn:
+        row = conn.execute("SELECT job_id, status FROM runs WHERE run_id = ?", (run_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if row["status"] != "running":
+        raise HTTPException(status_code=400, detail="Run is not active")
+    
+    job_id = row["job_id"]
+    if job_id:
+        try:
+            job = Job.fetch(job_id, connection=redis_connection)
+            status = job.get_status()
+            if status in ("queued", "deferred"):
+                job.cancel()
+            elif status == "started":
+                from rq.command import send_stop_job_command
+                send_stop_job_command(redis_connection, job_id)
+        except NoSuchJobError:
+            pass
+            
+    storage.finish_run(run_id, "failed", "Cancelled by user")
+    return {"status": "ok"}
+
+
 @app.get("/jobs/{job_id}")
 def get_job(job_id: str):
     try:
